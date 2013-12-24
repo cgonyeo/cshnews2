@@ -3,6 +3,7 @@ package edu.rit.csh.cshnews2;
 import android.app.Activity;
 import android.app.ActionBar;
 import android.app.Fragment;
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -23,6 +24,9 @@ public class NewsgroupActivity extends Activity {
                     .add(R.id.container, new PlaceholderFragment())
                     .commit();
         }
+
+        Intent i = new Intent(this, CshNewsService.class);
+        startService(i);
     }
 
 

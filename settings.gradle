@@ -1,1 +1,1 @@
-include ':CSH News 2'
+include ':CSH News 2', ':CSH News 2'
