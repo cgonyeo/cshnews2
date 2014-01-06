@@ -23,7 +23,6 @@
 
         <service
             android:name="CshNewsService"
-            android:process=":csh_news_service"
             android:icon="@drawable/ic_launcher"
             android:label="Background service for CSH News" >
         </service>
