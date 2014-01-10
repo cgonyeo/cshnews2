@@ -6,7 +6,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.graphics.Color;
+import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -14,17 +14,15 @@ import android.support.v4.widget.SlidingPaneLayout;
 import android.text.Html;
 import android.text.method.LinkMovementMethod;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
-import android.widget.RelativeLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -33,7 +31,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 
-public class NewsgroupActivity extends Activity {
+public class NewsgroupActivity extends Activity implements ActionBar.OnNavigationListener{
     private SlidingPaneLayout mSlidingLayout;
     private ListView mList;
     //private TextView mContent;
@@ -41,6 +39,8 @@ public class NewsgroupActivity extends Activity {
     boolean mBound = false;
     CshNewsService mService;
     JSONArray threadMetadatas;
+    JSONArray newsgroups;
+    NewsgroupsSpinnerAdapter newsgroupsSpinner;
 
     String selectedNewsgroup = "csh.test";
 
@@ -50,7 +50,7 @@ public class NewsgroupActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        setContentView(R.layout.fragment_newsgroup);
+        setContentView(R.layout.activity_newsgroup);
 
 
         mSlidingLayout = (SlidingPaneLayout) findViewById(R.id.sliding_pane_layout);
@@ -65,6 +65,8 @@ public class NewsgroupActivity extends Activity {
         mList.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1,
                 loadingText));
         mList.setOnItemClickListener(new ListItemClickListener());
+
+        newsgroupsSpinner = new NewsgroupsSpinnerAdapter(this, new JSONArray());
 
         mActionBar = createActionBarHelper();
         mActionBar.init();
@@ -106,6 +108,32 @@ public class NewsgroupActivity extends Activity {
         }
     }
 
+    @Override
+    public void onBackPressed() {
+        if(!mSlidingLayout.isOpen())
+            mSlidingLayout.openPane();
+        else
+            super.onBackPressed();
+    }
+
+    private boolean threadHasUnread(JSONObject threadMetadata)
+    {
+        try {
+            boolean hasUnread = false;
+            JSONArray children = threadMetadata.getJSONArray("children");
+            for(int i= 0; i < children.length(); i++)
+                hasUnread |= threadHasUnread(children.getJSONObject(i));
+            String unread_class = mService.getPost(selectedNewsgroup, threadMetadata.getJSONObject("post")
+                    .getString("number")).getJSONObject("post").getString("unread_class");
+            hasUnread |= !unread_class.equals("null");
+            return hasUnread;
+        } catch (JSONException e) {
+            Log.d("Hi", "Error parsing json for threadHasUnread");
+            Log.d("Hi", "Error " + e.toString());
+        }
+        return false;
+    }
+
     //Changes the detail view to show the information from the selected thread
     private void onThreadSelected(int threadSelected)
     {
@@ -113,78 +141,188 @@ public class NewsgroupActivity extends Activity {
 
         try {
             JSONObject postjson = threadMetadatas.getJSONObject(threadSelected);
-            addPostView(postjson);
+            addPostView(postjson, 0);
         } catch (JSONException e) {
             Log.d("Hi", "Error parsing json for onThreadSelected");
             Log.d("Hi", "Error " + e.toString());
         }
     }
 
-    private void addPostView(JSONObject postjsonmetadata) throws JSONException
+    private void addPostView(JSONObject postjsonmetadata, int depth) throws JSONException
     {
         JSONObject post = mService.getPost(selectedNewsgroup, postjsonmetadata.getJSONObject("post").getString("number"));
-        LinearLayout postView = buildPostView(post.getJSONObject("post"));
+        if(!post.getJSONObject("post").getString("unread_class").equals("null"))
+            mService.changeReadStatusOfPost(selectedNewsgroup, postjsonmetadata.getJSONObject("post").getString("number"), true);
+        View postView = buildPostView(post.getJSONObject("post"),
+                depth, postjsonmetadata.getJSONArray("children").length() == 0 && depth == 0);
         mPosts.addView(postView);
         JSONArray children = postjsonmetadata.getJSONArray("children");
         for(int i = 0; i < children.length(); i++)
-            addPostView(children.getJSONObject(i));
+            addPostView(children.getJSONObject(i), depth + 1);
     }
 
     //Returns a linearlayout containing the information given in post
-    private LinearLayout buildPostView(JSONObject post)
+    private View buildPostView(JSONObject post, int depth, boolean onlyOne)
     {
-        LinearLayout rootView = new LinearLayout(this);
-        RelativeLayout nameAndTimeHolder = new RelativeLayout(this);
-        TextView nameView = new TextView(this);
-        TextView timeView = new TextView(this);
-        RelativeLayout subjectAndMenuHolder = new RelativeLayout(this);
-        TextView subjectView = new TextView(this);
-        Button menuButton = new Button(this);
-        ImageView dividerView = new ImageView(this);
-        TextView bodyView = new TextView(this);
+        LayoutInflater infalInflater = (LayoutInflater)getSystemService(Context.LAYOUT_INFLATER_SERVICE);
+
+        View rootView = infalInflater.inflate(R.layout.post_item, null);
+
+        View nameAndTimeHolder = rootView.findViewById(R.id.nameAndTimeHolder);
+        View subjectAndMenuHolder = rootView.findViewById(R.id.subjectAndMenuHolder);
+        final View bodyHolder = rootView.findViewById(R.id.bodyHolder);
+        View quotedTextHolder = rootView.findViewById(R.id.quotedTextHolder);
+
+        final Button quotedTextButton = (Button) rootView.findViewById(R.id.quotedTextButton);
+
+        TextView nameView = (TextView) rootView.findViewById(R.id.nameView);
+        TextView timeView = (TextView) rootView.findViewById(R.id.timeView);
+        TextView subjectView = (TextView) rootView.findViewById(R.id.subjectView);
+        TextView bodyView1 = (TextView) rootView.findViewById(R.id.bodyView1);
+        final TextView bodyView2 = (TextView) rootView.findViewById(R.id.bodyView2);
+        TextView bodyView3 = (TextView) rootView.findViewById(R.id.bodyView3);
 
         try {
             nameView.setText(post.getString("author_name"));
-            timeView.setText(post.getString("date"));
+            String date = post.getString("date");
+            timeView.setText(date.substring(11,16)
+                    + " " + date.substring(5,7)
+                    + "/" + date.substring(8,10)
+                    + "/" + date.substring(0,4));
             subjectView.setText(post.getString("subject"));
 
             String bodyString = post.getString("body");
             bodyString = bodyString.replace("\n", "<br/>");
-            bodyView.setText(Html.fromHtml(bodyString, null, null));
-            bodyView.setMovementMethod(LinkMovementMethod.getInstance());
+            if(shouldBeCondensed(bodyString))
+            {
+                String[] parts = splitQuotedText(bodyString);
+                bodyView1.setText(Html.fromHtml(parts[0], null, null));
+                bodyView2.setText(Html.fromHtml(parts[1], null, null));
+                bodyView3.setText(Html.fromHtml(parts[2], null, null));
+                quotedTextHolder.setVisibility(View.VISIBLE);
+
+                quotedTextButton.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if(bodyView2.getVisibility() == View.VISIBLE)
+                        {
+                            quotedTextButton.setText("Show Quoted Text");
+                            bodyView2.setVisibility(View.GONE);
+                        }
+                        else
+                        {
+                            quotedTextButton.setText("Hide Quoted Text");
+                            bodyView2.setVisibility(View.VISIBLE);
+                        }
+                    }
+                });
+            }
+            else
+            {
+                bodyView1.setText(Html.fromHtml(bodyString, null, null));
+            }
+            bodyView1.setMovementMethod(LinkMovementMethod.getInstance());
+
+            if(!post.getString("unread_class").equals("null"))
+            {
+                nameView.setTypeface(null, Typeface.BOLD);
+                timeView.setTypeface(null, Typeface.BOLD);
+                subjectView.setTypeface(null, Typeface.BOLD);
+            }
         } catch (JSONException e) {
             Log.d("Hi", "Error parsing json for buildPostView");
             Log.d("Hi", "Error " + e.toString());
         }
 
-        LinearLayout.LayoutParams rootViewParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
+        try {
+            if(!post.getString("unread_class").equals("null"))
+            {
+                nameView.setTypeface(null, Typeface.BOLD);
+                timeView.setTypeface(null, Typeface.BOLD);
+                subjectView.setTypeface(null, Typeface.BOLD);
+            }
+            else if (!onlyOne)
+                bodyHolder.setVisibility(View.GONE);
+        } catch (JSONException e) {
+            Log.d("Hi", "Error parsing json for buildpostview");
+            Log.d("Hi", "Error " + e.toString());
+        }
+
+        View.OnClickListener toggleBody = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if(bodyHolder.getVisibility() == View.VISIBLE)
+                    bodyHolder.setVisibility(View.GONE);
+                else
+                    bodyHolder.setVisibility(View.VISIBLE);
+            }
+        };
+
+        nameAndTimeHolder.setOnClickListener(toggleBody);
+        subjectAndMenuHolder.setOnClickListener(toggleBody);
+
+        if(depth > 7)
+            depth = 7;
+        LinearLayout.LayoutParams rootViewParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rootViewParams.setMargins(5 + 20 * depth, 10, 5, 10);
+        rootView.setPadding(15, 15, 15, 15);
         rootView.setLayoutParams(rootViewParams);
-        rootView.setOrientation(LinearLayout.VERTICAL);
-        rootView.setPadding(10,10,10,10);
-
-        RelativeLayout.LayoutParams relativeParams = new RelativeLayout.LayoutParams(RelativeLayout.LayoutParams.MATCH_PARENT,
-                RelativeLayout.LayoutParams.WRAP_CONTENT);
-        nameAndTimeHolder.setLayoutParams(relativeParams);
-        nameAndTimeHolder.addView(nameView);
-        nameAndTimeHolder.addView(timeView);
-        RelativeLayout.LayoutParams params1 = (RelativeLayout.LayoutParams)nameView.getLayoutParams();
-        params1.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-        RelativeLayout.LayoutParams params2 = (RelativeLayout.LayoutParams)timeView.getLayoutParams();
-        params2.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-        rootView.addView(nameAndTimeHolder);
-
-        subjectAndMenuHolder.setLayoutParams(relativeParams);
-        subjectAndMenuHolder.addView(subjectView);
-        RelativeLayout.LayoutParams params3 = (RelativeLayout.LayoutParams)subjectView.getLayoutParams();
-        params3.addRule(RelativeLayout.ALIGN_PARENT_LEFT);
-        rootView.addView(subjectAndMenuHolder);
-
-        rootView.addView(bodyView);
 
         return rootView;
     }
 
+    public String[] splitQuotedText(String input)
+    {
+        int start = input.indexOf("<div class=\"quoted_text\">");
+        if(input.contains("<br/><div class=\"quoted_text\">"))
+            start = input.indexOf("<br/><div class=\"quoted_text\">");
+        int end = input.lastIndexOf("</div>") + 6;
+        String[] returnValue = {
+            input.substring(0, start),
+            input.substring(start, end),
+            input.substring(end, input.length())
+        };
+        return returnValue;
+    }
+
+    public boolean shouldBeCondensed(String input)
+    {
+        return input.contains("<div class=\"quoted_text\">");
+    }
+
+    public void newsgroupChanged(boolean stealFocus)
+    {
+        newsgroupsSpinner.setJSONArray(newsgroups);
+        newsgroupsSpinner.notifyDataSetChanged();
+        threadMetadatas = mService.getThreadsForNewsgroup(selectedNewsgroup);
+        if(threadMetadatas != null)
+        {
+            ArrayList<String[]> threads = new ArrayList<String[]>();
+            for(int i = 0; i < threadMetadatas.length(); i++)
+                try {
+                    String[] data = {
+                            threadMetadatas.getJSONObject(i).getJSONObject("post").getString("author_name"),
+                            threadMetadatas.getJSONObject(i).getJSONObject("post").getString("date"),
+                            threadMetadatas.getJSONObject(i).getJSONObject("post").getString("subject"),
+                            (threadHasUnread(threadMetadatas.getJSONObject(i)) ? "y" : "n")
+                    };
+                    threads.add(data);
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+            mList.setAdapter(new ThreadsListAdapter(NewsgroupActivity.this, 0, threads));
+        }
+        if(!mSlidingLayout.isOpen() && stealFocus)
+            mSlidingLayout.openPane();
+        if(stealFocus)
+            mPosts.removeAllViews();
+    }
+
+    public void updateFinished()
+    {
+        newsgroups = mService.getNewsgroups();
+        newsgroupChanged(false);
+    }
 
     /** Defines callbacks for service binding, passed to bindService() */
     private ServiceConnection mConnection = new ServiceConnection() {
@@ -196,20 +334,8 @@ public class NewsgroupActivity extends Activity {
             CshNewsService.LocalBinder binder = (CshNewsService.LocalBinder) service;
             mService = binder.getService();
             mBound = true;
-
-            threadMetadatas = mService.getThreadsForNewsgroup(selectedNewsgroup);
-            if(threadMetadatas != null)
-            {
-                ArrayList<String> threads = new ArrayList<String>();
-                for(int i = 0; i < threadMetadatas.length(); i++)
-                    try {
-                        threads.add(threadMetadatas.getJSONObject(i).getJSONObject("post").getString("subject"));
-                    } catch (JSONException e) {
-                        e.printStackTrace();
-                    }
-                mList.setAdapter(new ArrayAdapter<String>(NewsgroupActivity.this, android.R.layout.simple_list_item_1,
-                        threads));
-            }
+            newsgroups = mService.getNewsgroups();
+            newsgroupChanged(true);
         }
 
         @Override
@@ -217,6 +343,19 @@ public class NewsgroupActivity extends Activity {
             mBound = false;
         }
     };
+
+    @Override
+    public boolean onNavigationItemSelected(int itemPosition, long itemId) {
+        try {
+            selectedNewsgroup = newsgroups.getJSONObject(itemPosition).getString("name");
+        } catch (JSONException e) {
+            Log.d("Hi", "Error parsing json for onnavigaitonitemselected");
+            Log.d("Hi", "Error " + e.toString());
+            return false;
+        }
+        newsgroupChanged(true);
+        return true;
+    }
 
     /**
      * This list item click listener implements very simple view switching by changing
@@ -226,9 +365,7 @@ public class NewsgroupActivity extends Activity {
     private class ListItemClickListener implements ListView.OnItemClickListener {
         @Override
         public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-            //mContent.setText(Shakespeare.DIALOGUE[position]);
             onThreadSelected(position);
-            //mActionBar.setTitle(Shakespeare.TITLES[position]);
             mSlidingLayout.closePane();
         }
     }
@@ -301,11 +438,14 @@ public class NewsgroupActivity extends Activity {
             mActionBar.setDisplayHomeAsUpEnabled(true);
             mActionBar.setHomeButtonEnabled(true);
             mTitle = mDrawerTitle = getTitle();
+            mActionBar.setListNavigationCallbacks(newsgroupsSpinner, NewsgroupActivity.this);
         }
 
         @Override
         public void onPanelClosed() {
             super.onPanelClosed();
+            mActionBar.setNavigationMode(ActionBar.NAVIGATION_MODE_STANDARD);
+            mActionBar.setDisplayShowTitleEnabled(true);
             mActionBar.setDisplayHomeAsUpEnabled(true);
             mActionBar.setHomeButtonEnabled(true);
             mActionBar.setTitle(mTitle);
@@ -314,6 +454,8 @@ public class NewsgroupActivity extends Activity {
         @Override
         public void onPanelOpened() {
             super.onPanelOpened();
+            mActionBar.setNavigationMode(ActionBar.NAVIGATION_MODE_LIST);
+            mActionBar.setDisplayShowTitleEnabled(false);
             mActionBar.setHomeButtonEnabled(false);
             mActionBar.setDisplayHomeAsUpEnabled(false);
             mActionBar.setTitle(mDrawerTitle);
