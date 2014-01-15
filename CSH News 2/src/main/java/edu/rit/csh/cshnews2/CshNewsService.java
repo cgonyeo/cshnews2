@@ -1,11 +1,17 @@
 package edu.rit.csh.cshnews2;
 
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.AsyncTask;
 import android.os.Binder;
 import android.os.Environment;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.util.Log;
 
 import org.apache.http.HttpResponse;
@@ -48,7 +54,13 @@ public class CshNewsService extends Service {
     String apiKey = "0c0f86ead3223876";
     Semaphore updateLock = new Semaphore(1, true);
     Semaphore writeLock = new Semaphore(1, true);
+    Semaphore unreadListLock = new Semaphore(1, true);
     boolean isStarted = false;
+    NewsgroupActivity mActivity = null;
+    BroadcastReceiver updateReceiver;
+    PendingIntent pendingIntent;
+    AlarmManager alarmManager;
+    JSONArray newsgroups;
 
     // Binder given to clients
     private final IBinder mBinder = new LocalBinder();
@@ -59,19 +71,33 @@ public class CshNewsService extends Service {
         if(!isStarted)
         {
             isStarted = true;
-            ScheduledExecutorService scheduleTaskExecutor = Executors.newScheduledThreadPool(5);
-            scheduleTaskExecutor.scheduleAtFixedRate(new Runnable() {
-                public void run() {
-                    new PostFetcher(null).execute();
+            updateReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    new PostFetcher().execute();
                 }
-            }, 0, 2, TimeUnit.MINUTES);
+            };
+            registerReceiver(updateReceiver, new IntentFilter("edu.rit.csh.cshnews2"));
+            pendingIntent = PendingIntent.getBroadcast(this, 0, new Intent("edu.rit.csh.cshnews2"), 0);
+            alarmManager = (AlarmManager) this.getSystemService(Context.ALARM_SERVICE);
+
+            alarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 0,
+                    1000 * 60 * 2, pendingIntent);
         }
         return Service.START_NOT_STICKY;
     }
 
-    public void update(NewsgroupActivity requester)
+    @Override
+    public void onDestroy()
     {
-        new PostFetcher(requester).execute();
+        alarmManager.cancel(pendingIntent);
+        unregisterReceiver(updateReceiver);
+        super.onDestroy();
+    }
+
+    public void update()
+    {
+        new PostFetcher().execute();
     }
 
     public class JSONComparator implements Comparator<JSONObject> {
@@ -82,8 +108,8 @@ public class CshNewsService extends Service {
                 return lhs.getJSONObject("post").getString("date")
                         .compareTo(rhs.getJSONObject("post").getString("date"));
             } catch (JSONException e) {
-                Log.d("Hi", "Error parsing json for jsoncomparator");
-                Log.d("Hi", "Error " + e.toString());
+                Log.e("Hi", "Error parsing json for jsoncomparator");
+                Log.e("Hi", "Error " + e.toString());
             }
             return 0;
         }
@@ -95,12 +121,23 @@ public class CshNewsService extends Service {
         return mBinder;
     }
 
+    public void registerUI(NewsgroupActivity mActivity)
+    {
+        this.mActivity = mActivity;
+    }
+
+    public void deregisterUI()
+    {
+        this.mActivity = null;
+    }
+
     public JSONArray getNewsgroups()
     {
         try {
-            return new JSONObject(readFile("news/newsgroups")).getJSONArray("newsgroups");
+            newsgroups =  new JSONObject(readFile("news/newsgroups")).getJSONArray("newsgroups");
+            return newsgroups;
         } catch (JSONException e) {
-            Log.d("Hi", "Error parsing json for getnewsgroups");
+            Log.e("Hi", "Error parsing json for getnewsgroups");
         }
         return null;
     }
@@ -111,13 +148,16 @@ public class CshNewsService extends Service {
         File postFile = new File(
                 Environment.getExternalStoragePublicDirectory(""), filepath);
         if(!postFile.exists())
+        {
+            Log.e("Hi", "Requested post file " + postNum  + " in " + newsgroup + " doesn't exist!");
             return null;
+        }
         String post = readFile(filepath);
         try {
             return new JSONObject(post);
         } catch (JSONException e) {
-            Log.d("Hi", "Error parsing json for getPost");
-            Log.d("Hi", "Error " + e.toString());
+            Log.e("Hi", "Error parsing json for getPost");
+            Log.e("Hi", "Error " + e.toString());
         }
         return null;
     }
@@ -142,12 +182,61 @@ public class CshNewsService extends Service {
                 Collections.reverse(threads);
                 return new JSONArray(threads);
             } catch (JSONException e) {
-                Log.d("Hi", "Error parsing json for getting threads for newgroups");
-                Log.d("Hi", "Error " + e.toString());
+                Log.e("Hi", "Error parsing json for getting threads for newgroups");
+                Log.e("Hi", "Error " + e.toString());
             }
         }
         return null;
 
+    }
+
+    //Starting at currentNewsgroup, iterates through the newsgroups looking for
+    //threads with unread posts in them. Returns the first one it finds, and
+    //returns null if none found.
+    public JSONObject getNextUnread(String currentNewsgroup)
+    {
+        try{
+            JSONArray unreadList = new JSONArray(readFile("news/unread"));
+
+            for(int i = 0; i < unreadList.length(); i++)
+            {
+                if(!unreadList.isNull(i) && unreadList.getJSONObject(i).getString("newsgroup").equals(currentNewsgroup))
+                    return new JSONObject(readFile("news/" +
+                            unreadList.getJSONObject(i).getString("newsgroup") +
+                            "/threadmetadata/" +
+                            unreadList.getJSONObject(i).getInt("thread_parent")));
+            }
+            for(int i = 0; i < unreadList.length(); i++)
+            {
+                if(!unreadList.isNull(i))
+                    return new JSONObject(readFile("news/" +
+                            unreadList.getJSONObject(i).getString("newsgroup") +
+                            "/threadmetadata/" +
+                            unreadList.getJSONObject(i).getInt("thread_parent")));
+            }
+        } catch (JSONException e) {
+            Log.e("Hi", "JSONException on getNextUnread");
+        }
+        return null;
+    }
+
+    //Returns true if threadMetadata contains an unread post
+    public boolean threadHasUnread(JSONObject threadMetadata, String selectedNewsgroup)
+    {
+        try {
+            boolean hasUnread = false;
+            JSONArray children = threadMetadata.getJSONArray("children");
+            for(int i= 0; i < children.length(); i++)
+                hasUnread |= threadHasUnread(children.getJSONObject(i), selectedNewsgroup);
+            String unread_class = getPost(selectedNewsgroup, threadMetadata.getJSONObject("post")
+                    .getString("number")).getJSONObject("post").getString("unread_class");
+            hasUnread |= !unread_class.equals("null");
+            return hasUnread;
+        } catch (JSONException e) {
+            Log.e("Hi", "Error parsing json for threadHasUnread");
+            Log.e("Hi", "Error " + e.toString());
+        }
+        return false;
     }
 
     public void changeReadStatusOfPost(final String newsgroup, final String postNum, final boolean newValue)
@@ -156,6 +245,7 @@ public class CshNewsService extends Service {
             public void run()
             {
                 try {
+                    removeFromUnreadList(newsgroup, Integer.parseInt(postNum));
                     ArrayList<NameValuePair> params = new ArrayList<NameValuePair>();
                     params.add(new BasicNameValuePair("number",postNum));
                     params.add(new BasicNameValuePair("newsgroup",newsgroup));
@@ -170,11 +260,66 @@ public class CshNewsService extends Service {
                         writeFile("news/" + newsgroup + "/" + postNum, post.toString(4));
                     }
                 } catch (JSONException e) {
-                    Log.d("Hi", "Error parsing JSON for changeReadStatusOfPost");
-                    Log.d("Hi", "Error " + e.toString());
+                    Log.e("Hi", "Error parsing JSON for changeReadStatusOfPost");
+                    Log.e("Hi", "Error " + e.toString());
                 }
             }
         }.start();
+    }
+
+    public void addToUnreadList(String newsgroup, int threadNum, int postnum)
+    {
+        try {
+            unreadListLock.acquire();
+
+            JSONArray unreadList = new JSONArray(readFile("news/unread"));
+
+            JSONObject newEntry = new JSONObject();
+            newEntry.put("newsgroup", newsgroup);
+            newEntry.put("number", postnum);
+            newEntry.put("thread_parent", threadNum);
+
+            unreadList.put(newEntry);
+
+            writeFile("news/unread", unreadList.toString(4));
+
+            unreadListLock.release();
+        } catch (InterruptedException e) {
+            Log.e("Hi", "InterruptedException error on addToUnreadList");
+        } catch (JSONException e) {
+            Log.e("Hi", "Error parsing json for addToUnreadList");
+            Log.e("Hi", "Error " + e.toString());
+        }
+    }
+
+    public void removeFromUnreadList(String newsgroup, int postnum)
+    {
+        try {
+            unreadListLock.acquire();
+
+            JSONArray unreadList = new JSONArray(readFile("news/unread"));
+
+            for(int i = unreadList.length() - 1; i >= 0; i--)
+            {
+                if(!unreadList.isNull(i))
+                {
+                    JSONObject temp = unreadList.getJSONObject(i);
+                    if(temp.getString("newsgroup").equals(newsgroup) && temp.getInt("number") == postnum)
+                    {
+                        unreadList.put(i, null);
+                    }
+                }
+            }
+
+            writeFile("news/unread", unreadList.toString(4));
+
+            unreadListLock.release();
+        } catch (InterruptedException e) {
+            Log.e("Hi", "InterruptedException error on removeFromUnreadList");
+        } catch (JSONException e) {
+            Log.e("Hi", "Error parsing json for removeFromUnreadList");
+            Log.e("Hi", "Error " + e.toString());
+        }
     }
 
     //Makes the folder at path if it doesn't already exist
@@ -182,11 +327,11 @@ public class CshNewsService extends Service {
     {
         try
         {
-        writeLock.acquire();
+           writeLock.acquire();
         }
         catch(InterruptedException e)
         {
-            Log.d("Hi", "Error getting writeLock in makeFolder");
+            Log.e("Hi", "Error getting writeLock in makeFolder");
         }
 
         File folder = new File(
@@ -206,7 +351,7 @@ public class CshNewsService extends Service {
         }
         catch(InterruptedException e)
         {
-            Log.d("Hi", "Error getting writeLock in writeFile");
+            Log.e("Hi", "Error getting writeLock in writeFile");
         }
 
         Log.d("Hi", "Writing to " + path);
@@ -221,8 +366,8 @@ public class CshNewsService extends Service {
             bw.write(content);
             bw.close();
         } catch (IOException e) {
-            Log.d("Hi", "IO error with writing file");
-            Log.d("Hi", "IO error: " + e.toString());
+            Log.e("Hi", "IO error with writing file");
+            Log.e("Hi", "IO error: " + e.toString());
         }
         writeLock.release();
     }
@@ -232,11 +377,11 @@ public class CshNewsService extends Service {
     {
         try
         {
-        writeLock.acquire();
+            writeLock.acquire();
         }
         catch(InterruptedException e)
         {
-            Log.d("Hi", "Error getting writeLock in readFile");
+            Log.e("Hi", "Error getting writeLock in readFile");
         }
 
         String returnValue = "";
@@ -249,11 +394,11 @@ public class CshNewsService extends Service {
             fis.close();
             returnValue = new String(data, "UTF-8");
         } catch (FileNotFoundException e) {
-            Log.d("Hi", "Error opening file " + path);
-            Log.d("Hi", "Error: " + e.toString());
+            Log.e("Hi", "Error opening file " + path);
+            Log.e("Hi", "Error: " + e.toString());
         } catch (IOException e) {
-            Log.d("Hi", "Error reading file " + path);
-            Log.d("Hi", "Error: " + e.toString());
+            Log.e("Hi", "Error reading file " + path);
+            Log.e("Hi", "Error: " + e.toString());
         }
 
         writeLock.release();
@@ -294,18 +439,21 @@ public class CshNewsService extends Service {
             while ((line = rd.readLine()) != null) {
                 sb.append(line);
             }
+            rd.close();
             returnStatus = response.getStatusLine().getStatusCode();
             return sb.toString();
         } catch (IOException e) {
             if(response != null && response.getStatusLine() != null)
                 returnStatus = response.getStatusLine().getStatusCode();
-            Log.d("Hi", "IOException on the get request to " + page);
-            return "Error!";
+            Log.e("Hi", "IOException on the get request to " + page);
+            params.remove(params.size() - 1);
+            params.remove(params.size() - 1);
+            return makeGetRequest(page, apiKey, params);
         } catch (URISyntaxException e) {
             if(response != null && response.getStatusLine() != null)
                 returnStatus = response.getStatusLine().getStatusCode();
-            Log.d("Hi", "URISyntaxException on the get request to " + page);
-            return "Error!";
+            Log.e("Hi", "URISyntaxException on the get request to " + page);
+            return null;
         }
     }
 
@@ -337,17 +485,18 @@ public class CshNewsService extends Service {
             while ((line = rd.readLine()) != null) {
                 sb.append(line);
             }
+            rd.close();
             returnStatus = response.getStatusLine().getStatusCode();
             return sb.toString();
         } catch (IOException e) {
             if(response != null && response.getStatusLine() != null)
                 returnStatus = response.getStatusLine().getStatusCode();
-            Log.d("Hi", "IOException on the get request to " + page);
+            Log.e("Hi", "IOException on the get request to " + page);
             return "Error!";
         } catch (URISyntaxException e) {
             if(response != null && response.getStatusLine() != null)
                 returnStatus = response.getStatusLine().getStatusCode();
-            Log.d("Hi", "URISyntaxException on the get request to " + page);
+            Log.e("Hi", "URISyntaxException on the get request to " + page);
             return "Error!";
         }
     }
@@ -370,11 +519,6 @@ public class CshNewsService extends Service {
     //the last known post
     class PostFetcher extends AsyncTask
     {
-        NewsgroupActivity requester;
-        public PostFetcher(NewsgroupActivity requester)
-        {
-            this.requester = requester;
-        }
         @Override
         protected Object doInBackground(Object[] parameters) {
             try {
@@ -393,6 +537,18 @@ public class CshNewsService extends Service {
                     populateUserFile();
                 }
 
+                //File to contain a list of unread posts
+                File unreadListFile = new File(
+                        Environment.getExternalStoragePublicDirectory(""), "news/unread");
+                if(!unreadListFile.exists())
+                {
+                    try {
+                        writeFile("news/unread", new JSONArray().toString(4));
+                    } catch (JSONException e) {
+                        Log.e("Hi", "Error creating unread list");
+                    }
+                }
+
                 try {
                     //Fetch newsgroups.txt, save it, and give us a list of newsgroups
                     JSONArray newsgroups = populateNewsgroupsFile().getJSONArray("newsgroups");
@@ -400,27 +556,29 @@ public class CshNewsService extends Service {
                     //And start fetching
                     for(int i = 0; i < newsgroups.length(); i++)
                     {
-                        JSONObject newsgroup = newsgroups.getJSONObject(i);
-
+                        final JSONObject newsgroup = newsgroups.getJSONObject(i);
                         makeFolder("news/" + newsgroup.getString("name"));
                         makeFolder("news/" + newsgroup.getString("name") + "/threadmetadata");
 
                         File newsgroupFolder = new File(
-                            Environment.getExternalStoragePublicDirectory(""), 
-                            "news/" + newsgroup.getString("name"));
-                            
+                                Environment.getExternalStoragePublicDirectory(""),
+                                "news/" + newsgroup.getString("name"));
+
                         if(newsgroupFolder.list().length == 1)
                         {
                             //We have no posts for the newsgroup yet
                             //Get the json for the newsgroup
                             JSONObject newsgroupJson = getNewsgroup(newsgroup.getString("name"), null);
-                            //Get the threads out of the returned json
-                            JSONArray threads = newsgroupJson.getJSONArray("posts_older");
-                            for(int j = 0; j < threads.length(); j++)
+                            if(newsgroupJson != null)
                             {
-                                String threadNum = threads.getJSONObject(j).getJSONObject("post").getString("number");
-                                writeThreadMetadata(newsgroup.getString("name"), threadNum, threads.getJSONObject(j));
-                                getAndWritePostObjects(newsgroup.getString("name"), threads.getJSONObject(j));
+                                //Get the threads out of the returned json
+                                JSONArray threads = newsgroupJson.getJSONArray("posts_older");
+                                for(int j = 0; j < threads.length(); j++)
+                                {
+                                    String threadNum = threads.getJSONObject(j).getJSONObject("post").getString("number");
+                                    writeThreadMetadata(newsgroup.getString("name"), threadNum, threads.getJSONObject(j));
+                                    getAndWritePostObjects(newsgroup.getString("name"), threads.getJSONObject(j));
+                                }
                             }
                         }
                         //Get all posts that have occurred since the latest post we have
@@ -428,26 +586,28 @@ public class CshNewsService extends Service {
                         {
                             String lastPostDate = getDateOfLastPostFromNewsgroup(newsgroup.getString("name"));
                             JSONObject newsgroupJson = getNewsgroup(newsgroup.getString("name"), lastPostDate);
-                            JSONArray posts = newsgroupJson.getJSONArray("posts_newer");
-                            Log.d("Hi", newsgroup.getString("name") + " has " + posts.length() + " new posts since " + lastPostDate);
-                            for(int j = posts.length() - 1; j >= 0; j--)
+                            if(newsgroupJson != null)
                             {
-                                Log.d("Hi", posts.getJSONObject(j).toString(4));
-                                String newsgroupName = newsgroup.getString("name");
-                                String postNum = posts.getJSONObject(j).getJSONObject("post").getString("number");
-                                ArrayList<NameValuePair> nvp = new ArrayList<NameValuePair>();
-                                nvp.add(new BasicNameValuePair("html_body", "fsfsef"));
-                                String postDetailString = makeGetRequest(newsgroupName + "/" + postNum, apiKey, nvp);
-                                insertPostObjects(posts.getJSONObject(j), new JSONObject(postDetailString));
+                                JSONArray posts = newsgroupJson.getJSONArray("posts_newer");
+                                Log.d("Hi", newsgroup.getString("name") + " has " + posts.length() + " new posts since " + lastPostDate);
+                                for(int j = posts.length() - 1; j >= 0; j--)
+                                {
+                                    String newsgroupName = newsgroup.getString("name");
+                                    String postNum = posts.getJSONObject(j).getJSONObject("post").getString("number");
+                                    ArrayList<NameValuePair> nvp = new ArrayList<NameValuePair>();
+                                    nvp.add(new BasicNameValuePair("html_body", "fsfsef"));
+                                    String postDetailString = makeGetRequest(newsgroupName + "/" + postNum, apiKey, nvp);
+                                    insertPostObjects(posts.getJSONObject(j), new JSONObject(postDetailString));
+                                }
                             }
                         }
                     }
                 } catch (JSONException e) {
-                    Log.d("Hi", "JSON error with newsgroups");
-                    Log.d("Hi", "JSON error: " + e.toString());
+                    Log.e("Hi", "JSON error with newsgroups");
+                    Log.e("Hi", "JSON error: " + e.toString());
                 } catch (NullPointerException e) {
-                    Log.d("Hi", "NullPointerException, I guess we don't have network");
-                    Log.d("Hi", "Error: " + e.toString());
+                    Log.e("Hi", "NullPointerException, I guess we don't have network");
+                    Log.e("Hi", "Error: " + e.toString());
                 }
             }
             updateLock.release();
@@ -456,9 +616,9 @@ public class CshNewsService extends Service {
 
         @Override
         protected void onPostExecute(Object thing) {
-            if(requester != null)
+            if(CshNewsService.this.mActivity != null)
             {
-                requester.updateFinished();
+                CshNewsService.this.mActivity.updateFinished();
             }
         }
 
@@ -487,8 +647,8 @@ public class CshNewsService extends Service {
                 }
                 return latest;
             } catch (JSONException e) {
-                Log.d("Hi", "Error parsing JSON for getting latest date");
-                Log.d("Hi", "Error: " + e.toString());
+                Log.e("Hi", "Error parsing JSON for getting latest date");
+                Log.e("Hi", "Error: " + e.toString());
             }
             return null;
         }
@@ -503,8 +663,8 @@ public class CshNewsService extends Service {
                 }
                 dates.add(threadMetadata.getJSONObject("post").getString("date"));
             } catch (JSONException e) {
-                Log.d("Hi", "Error parsing JSON for dates");
-                Log.d("Hi", "Error: " + e.toString());
+                Log.e("Hi", "Error parsing JSON for dates");
+                Log.e("Hi", "Error: " + e.toString());
             }
         }
 
@@ -514,8 +674,8 @@ public class CshNewsService extends Service {
                 String path = "news/" + newsgroup + "/threadmetadata/" + threadNum;
                 writeFile(path, threadMetadata.toString(4));
             } catch (JSONException e) {
-                Log.d("Hi", "JSON error with writing thread metadata");
-                Log.d("Hi", "JSON error: " + e.toString());
+                Log.e("Hi", "JSON error with writing thread metadata");
+                Log.e("Hi", "JSON error: " + e.toString());
             }
         }
         private void insertPostObjects(JSONObject postMetadata, JSONObject post)
@@ -585,16 +745,17 @@ public class CshNewsService extends Service {
 
 
             } catch (JSONException e) {
-                Log.d("Hi", "Error parsing JSON for insert post");
-                Log.d("Hi", "Error: " + e.toString());
+                Log.e("Hi", "Error parsing JSON for insert post");
+                Log.e("Hi", "Error: " + e.toString());
             }
         }
         private void getAndWritePostObjects(final String newsgroup, final JSONObject postMetadata)
         {
             new Thread() {
-                public void run() {
-                    try {
-
+                public void run()
+                {
+                    try
+                    {
                         JSONArray children = postMetadata.getJSONArray("children");
                         for(int i = 0; i < children.length(); i++)
                         {
@@ -610,10 +771,23 @@ public class CshNewsService extends Service {
                         String postText = makeGetRequest(newsgroup + "/" + postMetadata.getJSONObject("post").getString("number"), apiKey, nvp);
                         JSONObject post = new JSONObject(postText);
 
+                        if(!post.getJSONObject("post").getString("unread_class").equals("null"))
+                        {
+                            int postNum = post.getJSONObject("post").getInt("number");
+                            int threadNum = postNum;
+                            if(post.getJSONObject("post").has("thread_parent") &&
+                                    post.getJSONObject("post").get("thread_parent") != null &&
+                                    post.getJSONObject("post").getJSONObject("thread_parent").getString("newsgroup").equals(newsgroup))
+                                threadNum = post.getJSONObject("post").getJSONObject("thread_parent").getInt("number");
+                            addToUnreadList(newsgroup, threadNum, postNum);
+                        }
+
                         writeFile(path, post.toString(4));
                     } catch (JSONException e) {
-                        Log.d("Hi", "JSON error with writing post");
-                        Log.d("Hi", "JSON error: " + e.toString());
+                        Log.e("Hi", "JSON error with writing post");
+                        Log.e("Hi", "JSON error: " + e.toString());
+                        for(StackTraceElement ste : e.getStackTrace())
+                            Log.e("Hi", ste.toString());
                     }
                 }
             }.start();
@@ -632,9 +806,9 @@ public class CshNewsService extends Service {
                 JSONObject returnValue = new JSONObject(result);
                 return returnValue;
             } catch (JSONException e) {
-                Log.d("Hi", "JSON error with getting newsgroup " + newsgroupName);
-                Log.d("Hi", "result: " + result);
-                Log.d("Hi", "JSON error: " + e.toString());
+                Log.e("Hi", "JSON error with getting newsgroup " + newsgroupName);
+                Log.e("Hi", "result: " + result);
+                Log.e("Hi", "JSON error: " + e.toString());
             }
             return null;
         }
@@ -650,8 +824,8 @@ public class CshNewsService extends Service {
                         return value;
                 }
             } catch (JSONException e) {
-                Log.d("Hi", "Error with JSON finding post " + num);
-                Log.d("Hi", "Error: " + e.toString());
+                Log.e("Hi", "Error with JSON finding post " + num);
+                Log.e("Hi", "Error: " + e.toString());
             }
             return null;
         }
@@ -666,8 +840,8 @@ public class CshNewsService extends Service {
 
                 returnValue = new JSONObject(newsgroupsString);
             } catch (JSONException e) {
-                Log.d("Hi", "JSON error with populating newsgroups file");
-                Log.d("Hi", "JSON error: " + e.toString());
+                Log.e("Hi", "JSON error with populating newsgroups file");
+                Log.e("Hi", "JSON error: " + e.toString());
             }
             return returnValue;
         }
@@ -679,8 +853,8 @@ public class CshNewsService extends Service {
                 makeFolder("news");
                 writeFile("news/user", userJSON.toString(4));
             } catch (JSONException e) {
-                Log.d("Hi", "Error parsing json for user");
-                Log.d("Hi", "Error " + e.toString());
+                Log.e("Hi", "Error parsing json for user");
+                Log.e("Hi", "Error " + e.toString());
             }
 
         }
