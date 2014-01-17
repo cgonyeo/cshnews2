@@ -12,6 +12,7 @@ import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 
@@ -21,22 +22,27 @@ import java.util.ArrayList;
 public class NewsgroupsSpinnerAdapter extends BaseAdapter implements SpinnerAdapter {
     Context context;
     JSONArray newsgroups;
+    JSONArray recentActivity;
 
-    public NewsgroupsSpinnerAdapter(Context context, JSONArray newsgroups)
+    public NewsgroupsSpinnerAdapter(Context context, JSONArray newsgroups, JSONArray recentActivity)
     {
         this.context = context;
         this.newsgroups = newsgroups;
+        this.recentActivity = recentActivity;
     }
 
     @Override
     public int getCount() {
         if(newsgroups == null)
             return 0;
-        return newsgroups.length();
+        return newsgroups.length() + 1;
     }
 
     @Override
     public Object getItem(int position) {
+        if(position == 0)
+            return "Recent Activity";
+        position--;
         try {
             return newsgroups.getJSONObject(position);
         } catch (JSONException e) {
@@ -56,14 +62,39 @@ public class NewsgroupsSpinnerAdapter extends BaseAdapter implements SpinnerAdap
         text.setPadding(7, 7, 7, 7);
         text.setTextSize(18);
         try {
-            String name = newsgroups.getJSONObject(position).getString("name");
-            int unread_count = newsgroups.getJSONObject(position).getInt("unread_count");
-            if(unread_count > 0)
+            if(position == 0)
             {
-                name += " (" + unread_count + ")";
-                text.setTypeface(null, Typeface.BOLD);
+                String name = "Recent Activity";
+                int unread_count = 0;
+                if(recentActivity != null)
+                {
+                    for(int i = 0; i < recentActivity.length(); i++)
+                    {
+                        if(!recentActivity.getJSONObject(i).getString("unread_class").equals("null"))
+                            unread_count++;
+                    }
+                    if(unread_count > 0)
+                    {
+                        name += " (" + unread_count + ")";
+                        text.setTypeface(null, Typeface.BOLD);
+                    }
+                }
+                text.setText(name);
             }
-            text.setText(name);
+            else
+            {
+                position--;
+
+                    String name = newsgroups.getJSONObject(position).getString("name");
+                    int unread_count = newsgroups.getJSONObject(position).getInt("unread_count");
+                    if(unread_count > 0)
+                    {
+                        name += " (" + unread_count + ")";
+                        text.setTypeface(null, Typeface.BOLD);
+                    }
+                    text.setText(name);
+
+            }
         } catch (JSONException e) {
             Log.d("Hi", "Error parsing json in NewsgroupsSpinnerAdapter.getItem");
             Log.d("Hi", "Error " + e.toString());
@@ -74,5 +105,9 @@ public class NewsgroupsSpinnerAdapter extends BaseAdapter implements SpinnerAdap
     public void setJSONArray(JSONArray newsgroups)
     {
         this.newsgroups = newsgroups;
+    }
+    public void setRecentActivity(JSONArray recentActivity)
+    {
+        this.recentActivity = recentActivity;
     }
 }

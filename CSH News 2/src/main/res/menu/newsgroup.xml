@@ -5,10 +5,6 @@
         android:icon="@android:drawable/ic_media_next"
         android:title="Next Unread"
         android:showAsAction="always" />
-    <item android:id="@+id/action_refresh"
-        android:icon="@android:drawable/ic_menu_rotate"
-        android:title="Refresh"
-        android:showAsAction="never" />
     <item android:id="@+id/action_settings"
         android:title="@string/action_settings"
         android:showAsAction="never" />
