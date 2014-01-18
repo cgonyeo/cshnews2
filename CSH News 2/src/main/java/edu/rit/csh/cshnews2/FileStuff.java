@@ -25,10 +25,13 @@ public class FileStuff {
 
     public static void init()
     {
-        initHasRun = true;
-        rootFolder = Environment.getExternalStoragePublicDirectory("") + "/news";
-        if(!fileExists(rootFolder))
-            makeFolder(rootFolder);
+        if(!initHasRun)
+        {
+            initHasRun = true;
+            rootFolder = Environment.getExternalStoragePublicDirectory("") + "/news";
+            if(!fileExists(rootFolder))
+                makeFolder(rootFolder);
+        }
     }
 
     //Makes the folder at path if it doesn't already exist

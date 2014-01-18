@@ -2,9 +2,11 @@ package edu.rit.csh.cshnews2;
 
 import android.app.ActionBar;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.graphics.Typeface;
 import android.os.Build;
@@ -61,6 +63,8 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
     private ActionBarHelper mActionBar;
     private PullToRefreshLayout mPullToRefreshLayout;
 
+    BroadcastReceiver updateReceiver;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -90,6 +94,14 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
 
         // Now find the PullToRefreshLayout to setup
         mPullToRefreshLayout = (PullToRefreshLayout) findViewById(R.id.ptr_layout);
+
+        updateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                updateFinished();
+            }
+        };
+        registerReceiver(updateReceiver, new IntentFilter(PostFetcher.UPDATE_FINISHED));
 
         // Now setup the PullToRefreshLayout
         ActionBarPullToRefresh.from(this)
@@ -181,6 +193,12 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             mSlidingLayout.openPane();
         else
             super.onBackPressed();
+    }
+
+    @Override
+    public void onDestroy()
+    {
+        unregisterReceiver(updateReceiver);
     }
 
     @Override
