@@ -71,6 +71,12 @@ public class UnreadTools {
             public void run()
             {
                 try {
+                    Log.d("Hi", "Marking " + newsgroup + " " + postNum + " as " + (newValue ? "read" : "unread"));
+
+                    JSONObject post = FileStuff.readJSONObject(newsgroup + "/" + postNum);
+                    post.getJSONObject("post").put("unread_class", (newValue ? "null" : "manual"));
+                    FileStuff.writeJSONObject(newsgroup + "/" + postNum, post);
+
                     removeFromUnreadList(newsgroup, Integer.parseInt(postNum));
                     ArrayList<NameValuePair> params = new ArrayList<NameValuePair>();
                     params.add(new BasicNameValuePair("number",postNum));
@@ -78,10 +84,6 @@ public class UnreadTools {
                     if(!newValue)
                         params.add(new BasicNameValuePair("mark_unread","hi"));
                     NetworkStuff.makePutRequest("mark_read", params);
-
-                    JSONObject post = FileStuff.readJSONObject(newsgroup + "/" + postNum);
-                    post.getJSONObject("post").put("unread_class", (newValue ? "null" : "manual"));
-                    FileStuff.writeJSONObject(newsgroup + "/" + postNum, post);
                 } catch (JSONException e) {
                     Log.e("Hi", "Error parsing JSON for changeReadStatusOfPost");
                     Log.e("Hi", "Error " + e.toString());

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <EditTextPreference
+        android:key="apiKeyInput"
+        android:title="Api Key"
+        android:summary="The API Key used to access WebNews" />
+    <CheckBoxPreference
+        android:key="shouldRunUpdate"
+        android:title="Run the update service"
+        android:summary="Check for new posts at an interval"
+        android:defaultValue="true"/>
+    <EditTextPreference
+        android:key="updateInterval"
+        android:title="Update Interval"
+        android:summary="Minutes between background updates"
+        android:dependency="shouldRunUpdate"
+        android:defaultValue="1"/>
+</PreferenceScreen>

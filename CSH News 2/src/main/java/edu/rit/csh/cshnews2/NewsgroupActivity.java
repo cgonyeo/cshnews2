@@ -12,7 +12,6 @@ import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.os.SystemClock;
 import android.support.v4.widget.SlidingPaneLayout;
 import android.text.Html;
 import android.text.method.LinkMovementMethod;
@@ -25,7 +24,6 @@ import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
-import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -46,7 +44,6 @@ import uk.co.senab.actionbarpulltorefresh.library.PullToRefreshLayout;
 public class NewsgroupActivity extends Activity implements ActionBar.OnNavigationListener, OnRefreshListener {
     private SlidingPaneLayout mSlidingLayout;
     private ListView mList;
-    //private TextView mContent;
     private LinearLayout mPosts;
     boolean mBound = false;
     CshNewsService mService;
@@ -101,7 +98,6 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                 updateFinished();
             }
         };
-        registerReceiver(updateReceiver, new IntentFilter(PostFetcher.UPDATE_FINISHED));
 
         // Now setup the PullToRefreshLayout
         ActionBarPullToRefresh.from(this)
@@ -113,7 +109,6 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                 .setup(mPullToRefreshLayout);
 
         Intent i = new Intent(this, CshNewsService.class);
-        i.putExtra("action", "startService");
         startService(i);
         // Bind to LocalService
         Intent intent = new Intent(this, CshNewsService.class);
@@ -137,8 +132,12 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             mSlidingLayout.openPane();
             return true;
         }
+        if(item.getItemId() == R.id.action_settings) {
+            Intent i = new Intent(this, SettingsActivity.class);
+            startActivity(i);
+        }
         if(item.getItemId() == R.id.action_next) {
-            JSONObject next = mService.getNextUnread(selectedNewsgroup);
+            JSONObject next = UnreadTools.getNextUnread(selectedNewsgroup);
             if(next != null)
             {
                 String newsgroup = "";
@@ -174,17 +173,19 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
     @Override
     protected void onStart() {
         super.onStart();
+        registerReceiver(updateReceiver, new IntentFilter(NewsUpdater.UPDATE_FINISHED));
     }
 
     @Override
     protected void onStop() {
-        super.onDestroy();
+        super.onStop();
         if(mBound)
         {
             mService.deregisterUI();
             unbindService(mConnection);
             mBound = false;
         }
+        unregisterReceiver(updateReceiver);
     }
 
     @Override
@@ -193,12 +194,6 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             mSlidingLayout.openPane();
         else
             super.onBackPressed();
-    }
-
-    @Override
-    public void onDestroy()
-    {
-        unregisterReceiver(updateReceiver);
     }
 
     @Override
@@ -219,13 +214,13 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                 JSONObject postjson = mService.getThreadMetadata(viewNewsgroup, postNum + "");
                 int unreadCounter = addPostView(postjson, 0);
 
-                /*if(unreadCounter>0)
+                if(unreadCounter>0)
                 {
                     newsgroupThreadsMetadata.get(threadSelected)[3] = "n";
                     ((ThreadsListAdapter)mList.getAdapter()).notifyDataSetChanged();
 
-                    changeUnreadCounterInNewsgroup(selectedNewsgroup, unreadCounter * -1);
-                }*/
+                    //changeUnreadCounterInNewsgroup(selectedNewsgroup, unreadCounter * -1);
+                }
             } catch (JSONException e) {
                 Log.d("Hi", "Error parsing json for onThreadSelected while in recent activity");
                 Log.d("Hi", "Error " + e.toString());
@@ -284,7 +279,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             if(!post.getJSONObject("post").isNull("unread_class") && !post.getJSONObject("post").getString("unread_class").equals("null"))
             {
                 unreadCounter++;
-                mService.changeReadStatusOfPost(newsgroup, postjsonmetadata.getJSONObject("post").getString("number"), true);
+                UnreadTools.changeReadStatusOfPost(newsgroup, postjsonmetadata.getJSONObject("post").getString("number"), true);
             }
             View postView = buildPostView(post.getJSONObject("post"),
                     depth, postjsonmetadata.getJSONArray("children").length() == 0 && depth == 0);
@@ -451,7 +446,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                                 recentActivity.getJSONObject(i).getJSONObject("thread_parent").getString("author_name"),
                                 recentActivity.getJSONObject(i).getJSONObject("thread_parent").getString("date"),
                                 recentActivity.getJSONObject(i).getJSONObject("thread_parent").getString("subject"),
-                                (recentActivity.getJSONObject(i).getString("unread_class").equals("null") ? "n" : "y")
+                                (recentActivity.getJSONObject(i).getInt("unread_count") == 0 ? "n" : "y")
                         };
                         newsgroupThreadsMetadata.add(data);
                     } catch (JSONException e) {
@@ -472,7 +467,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                                 threadMetadatas.getJSONObject(i).getJSONObject("post").getString("author_name"),
                                 threadMetadatas.getJSONObject(i).getJSONObject("post").getString("date"),
                                 threadMetadatas.getJSONObject(i).getJSONObject("post").getString("subject"),
-                                (mService.threadHasUnread(threadMetadatas.getJSONObject(i), selectedNewsgroup) ? "y" : "n")
+                                (UnreadTools.threadHasUnread(threadMetadatas.getJSONObject(i), selectedNewsgroup) ? "y" : "n")
                         };
                         newsgroupThreadsMetadata.add(data);
                     } catch (JSONException e) {

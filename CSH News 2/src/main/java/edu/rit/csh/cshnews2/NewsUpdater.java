@@ -1,6 +1,5 @@
 package edu.rit.csh.cshnews2;
 
-import android.app.Service;
 import android.content.Intent;
 import android.os.Environment;
 import android.util.Log;
@@ -19,13 +18,14 @@ import java.util.concurrent.Semaphore;
 //fetches the five most recent threads and their posts,
 //otherwise fetches all posts that have occurred since
 //the last known post
-class PostFetcher extends Thread
+class NewsUpdater extends Thread
 {
     public static String UPDATE_FINISHED = "UpdateFinished";
     CshNewsService caller;
     String apiKey = "";
+    Semaphore postLock = new Semaphore(20, true);
 
-    public PostFetcher(CshNewsService caller, String apiKey)
+    public NewsUpdater(CshNewsService caller, String apiKey)
     {
         this.caller = caller;
         this.apiKey = apiKey;
@@ -38,8 +38,8 @@ class PostFetcher extends Thread
             return;
         }
 
-        //Don't do anything if we can't write to the filesystem
-        if(isExternalStorageWritable())
+        //Don't do anything if we can't write to the filesystem, or don't have network
+        if(isExternalStorageWritable() && NetworkStuff.isNetworkAvailable())
         {
             //File to contain information about the user
             if(!FileStuff.fileExists("user"))
@@ -55,54 +55,72 @@ class PostFetcher extends Thread
 
             try {
                 //Fetch newsgroups.txt, save it, and give us a list of newsgroups
-                JSONArray newsgroups = populateNewsgroupsFile().getJSONArray("newsgroups");
+                final JSONArray newsgroups = populateNewsgroupsFile().getJSONArray("newsgroups");
+                //Get recent activity
+                getAndWriteRecentActivity();
+
+                ArrayList<Thread> threads = new ArrayList<Thread>();
                 //For every newsgroup, make the folders (does nothing if folders exist),
                 //And start fetching
                 for(int i = 0; i < newsgroups.length(); i++)
                 {
                     final JSONObject newsgroup = newsgroups.getJSONObject(i);
-                    FileStuff.makeFolder(newsgroup.getString("name"));
-                    FileStuff.makeFolder(newsgroup.getString("name") + "/threadmetadata");
+                    threads.add( new Thread() {
+                        public void run() {
+                            try {
+                                FileStuff.makeFolder(newsgroup.getString("name"));
+                                FileStuff.makeFolder(newsgroup.getString("name") + "/threadmetadata");
 
-                    if(FileStuff.getFilesInFolder(newsgroup.getString("name")).length == 1)
-                    {
-                        //We have no posts for the newsgroup yet
-                        //Get the json for the newsgroup
-                        JSONObject newsgroupJson = getNewsgroup(newsgroup.getString("name"), null);
-                        if(newsgroupJson != null)
-                        {
-                            //Get the threads out of the returned json
-                            JSONArray threads = newsgroupJson.getJSONArray("posts_older");
-                            for(int j = 0; j < threads.length(); j++)
-                            {
-                                String threadNum = threads.getJSONObject(j).getJSONObject("post").getString("number");
-                                writeThreadMetadata(newsgroup.getString("name"), threadNum, threads.getJSONObject(j));
-                                getAndWritePostObjects(newsgroup.getString("name"), threads.getJSONObject(j));
+                                if(FileStuff.getFilesInFolder(newsgroup.getString("name")).length == 1)
+                                {
+                                    //We have no posts for the newsgroup yet
+                                    //Get the json for the newsgroup
+                                    JSONObject newsgroupJson = getNewsgroup(newsgroup.getString("name"), null);
+                                    if(newsgroupJson != null)
+                                    {
+                                        //Get the threads out of the returned json
+                                        JSONArray threads = newsgroupJson.getJSONArray("posts_older");
+                                        for(int j = 0; j < threads.length(); j++)
+                                        {
+                                            String threadNum = threads.getJSONObject(j).getJSONObject("post").getString("number");
+                                            writeThreadMetadata(newsgroup.getString("name"), threadNum, threads.getJSONObject(j));
+                                            getAndWritePostObjects(newsgroup.getString("name"), threads.getJSONObject(j));
+                                        }
+                                    }
+                                }
+                                //Get all posts that have occurred since the latest post we have
+                                else
+                                {
+                                    String lastPostDate = getDateOfLastPostFromNewsgroup(newsgroup.getString("name"));
+                                    JSONObject newsgroupJson = getNewsgroup(newsgroup.getString("name"), lastPostDate);
+                                    if(newsgroupJson != null)
+                                    {
+                                        JSONArray posts = newsgroupJson.getJSONArray("posts_newer");
+                                        Log.d("Hi", newsgroup.getString("name") + " has " + posts.length() + " new posts since " + lastPostDate);
+                                        for(int j = posts.length() - 1; j >= 0; j--)
+                                        {
+                                            String newsgroupName = newsgroup.getString("name");
+                                            String postNum = posts.getJSONObject(j).getJSONObject("post").getString("number");
+                                            ArrayList<NameValuePair> nvp = new ArrayList<NameValuePair>();
+                                            nvp.add(new BasicNameValuePair("html_body", "fsfsef"));
+                                            String postDetailString =
+                                                    NetworkStuff.makeGetRequest(newsgroupName + "/" + postNum, nvp);
+                                            insertPostObjects(posts.getJSONObject(j), new JSONObject(postDetailString));
+                                        }
+                                    }
+                                }
+                            } catch (JSONException e) {
+                                Log.e("Hi", "Error parsing json in an internal thread in NewsUpdater");
+                                Log.e("Hi", "Error " + e.toString());
                             }
                         }
-                    }
-                    //Get all posts that have occurred since the latest post we have
-                    else
-                    {
-                        String lastPostDate = getDateOfLastPostFromNewsgroup(newsgroup.getString("name"));
-                        JSONObject newsgroupJson = getNewsgroup(newsgroup.getString("name"), lastPostDate);
-                        if(newsgroupJson != null)
-                        {
-                            JSONArray posts = newsgroupJson.getJSONArray("posts_newer");
-                            Log.d("Hi", newsgroup.getString("name") + " has " + posts.length() + " new posts since " + lastPostDate);
-                            for(int j = posts.length() - 1; j >= 0; j--)
-                            {
-                                String newsgroupName = newsgroup.getString("name");
-                                String postNum = posts.getJSONObject(j).getJSONObject("post").getString("number");
-                                ArrayList<NameValuePair> nvp = new ArrayList<NameValuePair>();
-                                nvp.add(new BasicNameValuePair("html_body", "fsfsef"));
-                                String postDetailString =
-                                        NetworkStuff.makeGetRequest(newsgroupName + "/" + postNum, nvp);
-                                insertPostObjects(posts.getJSONObject(j), new JSONObject(postDetailString));
-                            }
-                        }
-                    }
+                    });
                 }
+
+                for(Thread t : threads)
+                        t.start();
+                for(Thread t : threads)
+                        t.join();
 
                 //Sync unread posts, up to 100
                 ArrayList<String[]> unreadPosts = getListOfUnreadPosts();
@@ -120,6 +138,7 @@ class PostFetcher extends Thread
                     }
                     if(!weHaveAlready && FileStuff.fileExists(s[0] + "/" + s[1]))
                     {
+                        Log.d("Hi", "Adding " + s[0] + " " + s[1] + " " + s[2] + " to unread list");
                         UnreadTools.addToUnreadList(s[0], Integer.parseInt(s[2]), Integer.parseInt(s[1]));
                         JSONObject post = FileStuff.readJSONObject(s[0] + "/" + s[1]);
                         post.getJSONObject("post").put("unread_class", "manual");
@@ -140,23 +159,22 @@ class PostFetcher extends Thread
                     }
                     if(!isStillUnread && FileStuff.fileExists(
                             unreadList.getJSONObject(i).getString("newsgroup") + "/" +
-                            unreadList.getJSONObject(i).getInt("number")))
+                                    unreadList.getJSONObject(i).getInt("number")))
                     {
                         UnreadTools.removeFromUnreadList(unreadList.getJSONObject(i).getString("newsgroup"),
                                 unreadList.getJSONObject(i).getInt("number"));
                         JSONObject post = FileStuff.readJSONObject(
                                 unreadList.getJSONObject(i).getString("newsgroup") + "/" +
-                                unreadList.getJSONObject(i).getInt("number"));
+                                        unreadList.getJSONObject(i).getInt("number"));
                         post.getJSONObject("post").put("unread_class", "null");
                         FileStuff.writeJSONObject(
                                 unreadList.getJSONObject(i).getString("newsgroup") + "/" +
-                                unreadList.getJSONObject(i).getInt("number"),
+                                        unreadList.getJSONObject(i).getInt("number"),
                                 post);
                     }
                 }
 
-                //Get recent activity
-                getAndWriteRecentActivity();
+                Log.d("Hi", "Update complete");
             } catch (JSONException e) {
                 Log.e("Hi", "JSON error with newsgroups");
                 Log.e("Hi", "JSON error: " + e.toString());
@@ -164,6 +182,10 @@ class PostFetcher extends Thread
                     Log.e("Hi", ste.toString());
             } catch (NullPointerException e) {
                 Log.e("Hi", "NullPointerException, I guess we don't have network");
+                Log.e("Hi", "Error: " + e.toString());
+            } catch (InterruptedException e) {
+
+                Log.e("Hi", "InterruptedException error with newsgroups");
                 Log.e("Hi", "Error: " + e.toString());
             }
         }
@@ -202,19 +224,23 @@ class PostFetcher extends Thread
             ArrayList<String[]> toReturn = new ArrayList<String[]>();
             for(int i = 0; i < postsOlder.length(); i++)
             {
+                String newsgroup = postsOlder.getJSONObject(i).getJSONObject("post").getString("newsgroup");
                 String postNum = postsOlder.getJSONObject(i).getJSONObject("post").getInt("number") + "";
                 String threadNum = "";
-                if(postsOlder.getJSONObject(i).getJSONObject("post").has("thread_parent"))
-                    threadNum = postsOlder.getJSONObject(i).getJSONObject("post")
-                            .getJSONObject("thread_parent").getInt("number") + "";
-                else
-                    threadNum = postNum;
+                if(FileStuff.fileExists(newsgroup + "/" + postNum))
+                {
+                    JSONObject post = FileStuff.readJSONObject(newsgroup + "/" + postNum);
 
-                String[] holder = {
-                        postsOlder.getJSONObject(i).getJSONObject("post").getString("newsgroup"),
-                        postNum, threadNum
-                };
-                toReturn.add(holder);
+                    if(post.getJSONObject("post").has("thread_parent") &&
+                            post.getJSONObject("post").getJSONObject("thread_parent")
+                                    .getString("newsgroup").equals(newsgroup))
+                        threadNum = post.getJSONObject("post").getJSONObject("thread_parent").getInt("number") + "";
+                    else
+                        threadNum = postNum;
+
+                    String[] holder = { newsgroup, postNum, threadNum };
+                    toReturn.add(holder);
+                }
             }
 
             int counter = 0;
@@ -229,16 +255,26 @@ class PostFetcher extends Thread
 
                 for(int i = 0; i < postsOlder.length(); i++)
                 {
-                    String[] holder = {
-                            postsOlder.getJSONObject(i).getJSONObject("post").getString("newsgroup"),
-                            postsOlder.getJSONObject(i).getJSONObject("post").getInt("number") + ""
-                    };
-                    toReturn.add(holder);
-                }
+                    String newsgroup = postsOlder.getJSONObject(i).getJSONObject("post").getString("newsgroup");
+                    String postNum = postsOlder.getJSONObject(i).getJSONObject("post").getInt("number") + "";
+                    String threadNum = "";
+                    if(FileStuff.fileExists(newsgroup + "/" + postNum))
+                    {
+                        JSONObject post = FileStuff.readJSONObject(newsgroup + "/" + postNum);
 
+                        if(post.getJSONObject("post").has("thread_parent") &&
+                                post.getJSONObject("post").getJSONObject("thread_parent")
+                                        .getString("newsgroup").equals(newsgroup))
+                            threadNum = post.getJSONObject("post").getJSONObject("thread_parent").getInt("number") + "";
+                        else
+                            threadNum = postNum;
+
+                        String[] holder = { newsgroup, postNum, threadNum };
+                        toReturn.add(holder);
+                    }
+                }
                 counter++;
             }
-
             return toReturn;
         } catch (JSONException e) {
             Log.e("Hi", "Error parsing json for getListOfUnreadPosts");
@@ -312,7 +348,7 @@ class PostFetcher extends Thread
                 parentNum = post.getJSONObject("post").getJSONObject("parent").getString("number");
                 parentNewsgroup = post.getJSONObject("post").getJSONObject("parent").getString("newsgroup");
 
-                if(!post.getJSONObject("post").isNull("thread_parent"))
+                if(post.getJSONObject("post").has("thread_parent"))
                 {
                     threadNum = post.getJSONObject("post").getJSONObject("thread_parent").getString("number");
                     threadParentNewsgroup = post.getJSONObject("post").getJSONObject("thread_parent").getString("newsgroup");
@@ -331,6 +367,7 @@ class PostFetcher extends Thread
 
                 if(newsgroup.equals(parentNewsgroup))
                 {
+
 
                     JSONObject threadMetadata = FileStuff.readJSONObject(newsgroup + "/threadmetadata/" + threadNum);
 
@@ -373,17 +410,16 @@ class PostFetcher extends Thread
     }
     private void getAndWritePostObjects(final String newsgroup, final JSONObject postMetadata)
     {
+        try {
+            postLock.acquire();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
         new Thread() {
             public void run()
             {
                 try
                 {
-                    JSONArray children = postMetadata.getJSONArray("children");
-                    for(int i = 0; i < children.length(); i++)
-                    {
-                        getAndWritePostObjects(newsgroup, children.getJSONObject(i));
-                    }
-
                     String path = newsgroup + "/" +
                             postMetadata.getJSONObject("post").getString("number");
 
@@ -399,13 +435,20 @@ class PostFetcher extends Thread
                         int postNum = post.getJSONObject("post").getInt("number");
                         int threadNum = postNum;
                         if(post.getJSONObject("post").has("thread_parent") &&
-                                post.getJSONObject("post").get("thread_parent") != null &&
                                 post.getJSONObject("post").getJSONObject("thread_parent").getString("newsgroup").equals(newsgroup))
                             threadNum = post.getJSONObject("post").getJSONObject("thread_parent").getInt("number");
                         UnreadTools.addToUnreadList(newsgroup, threadNum, postNum);
                     }
 
                     FileStuff.writeJSONObject(path, post);
+
+                    postLock.release();
+
+                    JSONArray children = postMetadata.getJSONArray("children");
+                    for(int i = 0; i < children.length(); i++)
+                    {
+                        getAndWritePostObjects(newsgroup, children.getJSONObject(i));
+                    }
                 } catch (JSONException e) {
                     Log.e("Hi", "JSON error with writing post");
                     Log.e("Hi", "JSON error: " + e.toString());

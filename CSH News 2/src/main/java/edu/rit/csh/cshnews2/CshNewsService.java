@@ -7,8 +7,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.IBinder;
+import android.preference.PreferenceManager;
 import android.util.Log;
 
 import org.apache.http.NameValuePair;
@@ -27,9 +29,9 @@ import java.util.concurrent.Semaphore;
 /**
  * Created by derek on 12/23/13.
  */
-public class CshNewsService extends Service {
+public class CshNewsService extends Service implements SharedPreferences.OnSharedPreferenceChangeListener {
     int returnStatus = 0;
-    String apiKey = "0c0f86ead3223876";
+    String apiKey = null;
     public Semaphore updateLock = new Semaphore(1, true);
     Semaphore unreadListLock = new Semaphore(1, true);
     boolean isStarted = false;
@@ -37,6 +39,9 @@ public class CshNewsService extends Service {
     BroadcastReceiver updateReceiver;
     PendingIntent pendingIntent;
     AlarmManager alarmManager;
+    SharedPreferences pm = null;
+    boolean updateWanted = false;
+    int updateInterval = 5;
 
     // Binder given to clients
     private final IBinder mBinder = new LocalBinder();
@@ -44,23 +49,36 @@ public class CshNewsService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d("Hi", "Starting service...");
+        if(pm == null)
+        {
+            pm = PreferenceManager.getDefaultSharedPreferences(this);
+        }
+        if(apiKey == null)
+        {
+            apiKey = pm.getString("apiKeyInput", "");
+            updateWanted = pm.getBoolean("shouldRunUpdate", updateWanted);
+            String intervalTemp = pm.getString("updateInterval", "");
+            if(intervalTemp != "" && Integer.parseInt(intervalTemp) > 0)
+                updateInterval = Integer.parseInt(intervalTemp);
+        }
         FileStuff.init();
-        NetworkStuff.init(apiKey);
+        NetworkStuff.init(apiKey, this);
         if(!isStarted)
         {
             isStarted = true;
             updateReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    new PostFetcher(CshNewsService.this, apiKey).start();
+                    new NewsUpdater(CshNewsService.this, apiKey).start();
                 }
             };
             registerReceiver(updateReceiver, new IntentFilter("edu.rit.csh.cshnews2"));
             pendingIntent = PendingIntent.getBroadcast(this, 0, new Intent("edu.rit.csh.cshnews2"), 0);
             alarmManager = (AlarmManager) this.getSystemService(Context.ALARM_SERVICE);
 
-            alarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 0,
-                    1000 * 60 * 2, pendingIntent);
+            if(updateWanted)
+                alarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 0,
+                        1000 * 60 * updateInterval, pendingIntent);
         }
         return Service.START_NOT_STICKY;
     }
@@ -75,7 +93,36 @@ public class CshNewsService extends Service {
 
     public void update()
     {
-        new PostFetcher(this, apiKey).start();
+        new NewsUpdater(this, apiKey).start();
+    }
+
+    @Override
+    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+        pm = sharedPreferences;
+
+        String newApiKey = pm.getString("apiKeyInput", "");
+        if(!newApiKey.equals(apiKey))
+        {
+            apiKey = newApiKey;
+            update();
+        }
+
+        String intervalTemp = pm.getString("updateInterval", "");
+        if(intervalTemp != "" && Integer.parseInt(intervalTemp) > 0)
+            updateInterval = Integer.parseInt(intervalTemp);
+
+        boolean newUpdateWanted = pm.getBoolean("shouldRunUpdate", updateWanted);
+        if(newUpdateWanted && !updateWanted)
+        {
+            updateWanted = newUpdateWanted;
+            alarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 0,
+                    1000 * 60 * updateInterval, pendingIntent);
+        }
+        if(!newUpdateWanted && updateWanted)
+        {
+            updateWanted = newUpdateWanted;
+            alarmManager.cancel(pendingIntent);
+        }
     }
 
     public class JSONComparator implements Comparator<JSONObject> {
@@ -165,138 +212,6 @@ public class CshNewsService extends Service {
         }
         return null;
 
-    }
-
-    //Starting at currentNewsgroup, iterates through the newsgroups looking for
-    //threads with unread posts in them. Returns the first one it finds, and
-    //returns null if none found.
-    public JSONObject getNextUnread(String currentNewsgroup)
-    {
-        try{
-            JSONArray unreadList = FileStuff.readJSONArray("unread");
-
-            for(int i = 0; i < unreadList.length(); i++)
-            {
-                if(!unreadList.isNull(i) && unreadList.getJSONObject(i).getString("newsgroup").equals(currentNewsgroup))
-                    return FileStuff.readJSONObject(unreadList.getJSONObject(i).getString("newsgroup") +
-                            "/threadmetadata/" +
-                            unreadList.getJSONObject(i).getInt("thread_parent"));
-            }
-            for(int i = 0; i < unreadList.length(); i++)
-            {
-                if(!unreadList.isNull(i))
-                    return FileStuff.readJSONObject(
-                            unreadList.getJSONObject(i).getString("newsgroup") +
-                            "/threadmetadata/" +
-                            unreadList.getJSONObject(i).getInt("thread_parent"));
-            }
-        } catch (JSONException e) {
-            Log.e("Hi", "JSONException on getNextUnread");
-        }
-        return null;
-    }
-
-    //Returns true if threadMetadata contains an unread post
-    public boolean threadHasUnread(JSONObject threadMetadata, String selectedNewsgroup)
-    {
-        try {
-            boolean hasUnread = false;
-            JSONArray children = threadMetadata.getJSONArray("children");
-            for(int i= 0; i < children.length(); i++)
-                hasUnread |= threadHasUnread(children.getJSONObject(i), selectedNewsgroup);
-            String unread_class = getPost(selectedNewsgroup, threadMetadata.getJSONObject("post")
-                    .getString("number")).getJSONObject("post").getString("unread_class");
-            hasUnread |= !unread_class.equals("null");
-            return hasUnread;
-        } catch (JSONException e) {
-            Log.e("Hi", "Error parsing json for threadHasUnread");
-            Log.e("Hi", "Error " + e.toString());
-        }
-        return false;
-    }
-
-    public void changeReadStatusOfPost(final String newsgroup, final String postNum, final boolean newValue)
-    {
-        new Thread(){
-            public void run()
-            {
-                try {
-                    removeFromUnreadList(newsgroup, Integer.parseInt(postNum));
-                    ArrayList<NameValuePair> params = new ArrayList<NameValuePair>();
-                    params.add(new BasicNameValuePair("number",postNum));
-                    params.add(new BasicNameValuePair("newsgroup",newsgroup));
-                    if(!newValue)
-                        params.add(new BasicNameValuePair("mark_unread","hi"));
-                    NetworkStuff.makePutRequest("mark_read", params);
-
-                    if(returnStatus == 200)
-                    {
-                        JSONObject post = FileStuff.readJSONObject(newsgroup + "/" + postNum);
-                        post.getJSONObject("post").put("unread_class", (newValue ? "null" : "manual"));
-                        FileStuff.writeJSONObject(newsgroup + "/" + postNum, post);
-                    }
-                } catch (JSONException e) {
-                    Log.e("Hi", "Error parsing JSON for changeReadStatusOfPost");
-                    Log.e("Hi", "Error " + e.toString());
-                }
-            }
-        }.start();
-    }
-
-    public void addToUnreadList(String newsgroup, int threadNum, int postnum)
-    {
-        try {
-            unreadListLock.acquire();
-
-            JSONArray unreadList = FileStuff.readJSONArray("unread");
-
-            JSONObject newEntry = new JSONObject();
-            newEntry.put("newsgroup", newsgroup);
-            newEntry.put("number", postnum);
-            newEntry.put("thread_parent", threadNum);
-
-            unreadList.put(newEntry);
-
-            FileStuff.writeJSONArray("unread", unreadList);
-
-            unreadListLock.release();
-        } catch (InterruptedException e) {
-            Log.e("Hi", "InterruptedException error on addToUnreadList");
-        } catch (JSONException e) {
-            Log.e("Hi", "Error parsing json for addToUnreadList");
-            Log.e("Hi", "Error " + e.toString());
-        }
-    }
-
-    public void removeFromUnreadList(String newsgroup, int postnum)
-    {
-        try {
-            unreadListLock.acquire();
-
-            JSONArray unreadList = FileStuff.readJSONArray("unread");
-            JSONArray newUnreadList = new JSONArray();
-
-            for(int i = unreadList.length() - 1; i >= 0; i--)
-            {
-                if(!unreadList.isNull(i))
-                {
-                    JSONObject temp = unreadList.getJSONObject(i);
-                    if(!temp.getString("newsgroup").equals(newsgroup) || temp.getInt("number") != postnum)
-                    {
-                        newUnreadList.put(temp);
-                    }
-                }
-            }
-
-            FileStuff.writeJSONArray("unread", newUnreadList);
-
-            unreadListLock.release();
-        } catch (InterruptedException e) {
-            Log.e("Hi", "InterruptedException error on removeFromUnreadList");
-        } catch (JSONException e) {
-            Log.e("Hi", "Error parsing json for removeFromUnreadList");
-            Log.e("Hi", "Error " + e.toString());
-        }
     }
 
     /**

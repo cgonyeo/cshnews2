@@ -1,5 +1,10 @@
 package edu.rit.csh.cshnews2;
 
+import android.app.Activity;
+import android.app.Service;
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.util.Log;
 
 import org.apache.http.HttpResponse;
@@ -25,15 +30,26 @@ import java.util.ArrayList;
 public class NetworkStuff {
     public static int returnStatus;
     private static String apiKey;
-    private static boolean initHasRun = false;
+    private static CshNewsService mService;
 
-    public static void init(String api_key)
+    public static void init(String api_key, CshNewsService service)
     {
-        if(!initHasRun)
-        {
-            initHasRun = true;
-            apiKey = api_key;
-        }
+        apiKey = api_key;
+        mService = service;
+    }
+    public static boolean isNetworkAvailable() {
+        if(mService == null)
+            return false;
+        ConnectivityManager connectivityManager
+                = (ConnectivityManager) mService.getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
+        return activeNetworkInfo != null && activeNetworkInfo.isConnected();
+    }
+    public static boolean isNetworkAvailable(Activity act) {
+        ConnectivityManager connectivityManager
+                = (ConnectivityManager) act.getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
+        return activeNetworkInfo != null && activeNetworkInfo.isConnected();
     }
     //Makes a get request to page with no additional parameters
     public static String makeGetRequest(String page)
@@ -78,13 +94,15 @@ public class NetworkStuff {
             Log.e("Hi", "IOException on the get request to " + page);
             params.remove(params.size() - 1);
             params.remove(params.size() - 1);
-            return makeGetRequest(page, params);
+            if(isNetworkAvailable())
+                return makeGetRequest(page, params);
         } catch (URISyntaxException e) {
             if(response != null && response.getStatusLine() != null)
                 returnStatus = response.getStatusLine().getStatusCode();
             Log.e("Hi", "URISyntaxException on the get request to " + page);
             return null;
         }
+        return null;
     }
 
     //Makes a get request to page with the specified additional parameters
