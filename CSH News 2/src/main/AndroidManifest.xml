@@ -22,7 +22,7 @@
         <service
             android:name="edu.rit.csh.cshnews2.CshNewsService"
             android:icon="@drawable/ic_launcher"
-            android:label="Background service for CSH News" >
+            android:label="CSH News Updater" >
         </service>
 
         <activity
@@ -35,7 +35,7 @@
         </activity>
         <activity
             android:name="edu.rit.csh.cshnews2.LoginActivity"
-            android:label="@string/title_activity_login" >
+            android:label="CSH News" >
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 

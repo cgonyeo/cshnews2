@@ -183,6 +183,17 @@ public class CshNewsService extends Service implements SharedPreferences.OnShare
         }
         return null;
     }
+    public void saveRecentActivity(JSONArray recentActivity)
+    {
+        JSONObject thingToWrite = new JSONObject();
+        try {
+            thingToWrite.put("activity", recentActivity);
+        } catch (JSONException e) {
+            Log.e("Hi", "Error parsing json for saveRecentActivity");
+            Log.e("Hi", "Error " + e.toString());
+        }
+        FileStuff.writeJSONObject("recentactivity", thingToWrite);
+    }
 
     public JSONObject getThreadMetadata(String newsgroup, String threadNum)
     {

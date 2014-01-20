@@ -16,4 +16,9 @@
         android:summary="Minutes between background updates"
         android:dependency="shouldRunUpdate"
         android:defaultValue="1"/>
+    <Preference android:title="Submit a bug"
+        android:summary="Brings you to the app's issue tracker">
+        <intent android:action="android.intent.action.VIEW"
+            android:data="https://github.com/dgonyeo/cshnews2/issues" />
+    </Preference>
 </PreferenceScreen>

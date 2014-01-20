@@ -65,20 +65,6 @@ public class NewsgroupsSpinnerAdapter extends BaseAdapter implements SpinnerAdap
             if(position == 0)
             {
                 String name = "Recent Activity";
-                int unread_count = 0;
-                if(recentActivity != null)
-                {
-                    for(int i = 0; i < recentActivity.length(); i++)
-                    {
-                        if(!recentActivity.getJSONObject(i).getString("unread_class").equals("null"))
-                            unread_count++;
-                    }
-                    if(unread_count > 0)
-                    {
-                        name += " (" + unread_count + ")";
-                        text.setTypeface(null, Typeface.BOLD);
-                    }
-                }
                 text.setText(name);
             }
             else

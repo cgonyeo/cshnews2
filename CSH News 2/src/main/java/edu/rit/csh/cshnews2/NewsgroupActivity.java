@@ -55,6 +55,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
 
     String selectedNewsgroup = "csh.test";
     String viewNewsgroup = "";
+    String threadNum;
     ArrayList<String[]> newsgroupThreadsMetadata;
 
     private ActionBarHelper mActionBar;
@@ -62,12 +63,18 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
 
     BroadcastReceiver updateReceiver;
 
+    boolean loadPost = false;
+    int spinnerSelection = -1;
+    boolean onResumeWasCalledWithoutOnCreate = true;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         setContentView(R.layout.activity_newsgroup);
 
+        if(savedInstanceState != null)
+            spinnerSelection = savedInstanceState.getInt("spinnerSelection");
 
         mSlidingLayout = (SlidingPaneLayout) findViewById(R.id.sliding_pane_layout);
         mList = (ListView) findViewById(R.id.left_pane);
@@ -113,6 +120,8 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
         // Bind to LocalService
         Intent intent = new Intent(this, CshNewsService.class);
         bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
+
+        onResumeWasCalledWithoutOnCreate = false;
     }
 
     @Override
@@ -141,16 +150,13 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             if(next != null)
             {
                 String newsgroup = "";
+                int threadNum = -1;
                 try {
                     newsgroup = next.getJSONObject("post").getString("newsgroup");
+                    threadNum = next.getJSONObject("post").getInt("number");
                 } catch (JSONException e) {
                     Log.d("Hi", "Error parsing json for menu item next");
                     Log.d("Hi", "Error " + e.toString());
-                }
-                try {
-                    Log.d("Hi", next.toString(4));
-                } catch (JSONException e) {
-                    e.printStackTrace();
                 }
                 viewNewsgroup = newsgroup;
                 mActionBar.setTitle(viewNewsgroup);
@@ -158,8 +164,27 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                     mSlidingLayout.closePane();
                 mPosts.removeAllViews();
                 int unreadCounter = addPostView(next, 0);
-                Log.d("Hi", "Changing unread counter in " + newsgroup + " by " + unreadCounter);
                 changeUnreadCounterInNewsgroup(newsgroup, unreadCounter * -1);
+
+                try {
+                    if(unreadCounter != 0 )
+                    {
+                        for(int i = 0; i < recentActivity.length(); i++)
+                        {
+                            JSONObject thread_parent = recentActivity.getJSONObject(i).getJSONObject("thread_parent");
+                            if(thread_parent.getString("newsgroup").equals(viewNewsgroup) &&
+                                    thread_parent.getInt("number") == threadNum)
+                            {
+                                recentActivity.getJSONObject(i).put("unread_count", 0);
+                                mService.saveRecentActivity(recentActivity);
+                            }
+                        }
+                        newsgroupChanged(false);
+                    }
+                } catch (JSONException e) {
+                    Log.e("Hi", "Error parsing json for onThreadSelected while editing recent activity while not in recent activity");
+                    Log.d("Hi", "Error " + e.toString());
+                }
             }
             else
             {
@@ -189,11 +214,65 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
     }
 
     @Override
+    protected void onResume()
+    {
+        super.onResume();
+        if(onResumeWasCalledWithoutOnCreate)
+        {
+            newsgroups = mService.getNewsgroups();
+            newsgroupChanged(false);
+        }
+        onResumeWasCalledWithoutOnCreate = true;
+    }
+
+    @Override
     public void onBackPressed() {
         if(!mSlidingLayout.isOpen())
             mSlidingLayout.openPane();
         else
             super.onBackPressed();
+    }
+
+    @Override
+    protected void onSaveInstanceState (Bundle outState)
+    {
+        super.onSaveInstanceState(outState);
+        if(threadMetadatas != null)
+            outState.putString("threadMetadatas", threadMetadatas.toString());
+        outState.putString("newsgroups", newsgroups.toString());
+        outState.putString("recentActivity", recentActivity.toString());
+        outState.putString("selectedNewsgroup", selectedNewsgroup);
+        outState.putString("viewNewsgroup", viewNewsgroup);
+        outState.putBoolean("inRecentActivity", inRecentActivity);
+        if(mActionBar.mActionBar != null)
+            outState.putInt("spinnerSelection", mActionBar.mActionBar.getSelectedNavigationIndex());
+        if(!mSlidingLayout.isOpen())
+            outState.putString("threadNum", threadNum);
+    }
+
+    @Override
+    protected void onRestoreInstanceState (Bundle savedInstanceState)
+    {
+        super.onRestoreInstanceState(savedInstanceState);
+        try
+        {
+            if(savedInstanceState.containsKey("threadMetadatas"))
+                threadMetadatas = new JSONArray(savedInstanceState.getString("threadMetadatas"));
+            newsgroups = new JSONArray(savedInstanceState.getString("newsgroups"));
+            recentActivity = new JSONArray(savedInstanceState.getString("recentActivity"));
+            selectedNewsgroup = savedInstanceState.getString("selectedNewsgroup");
+            viewNewsgroup = savedInstanceState.getString("viewNewsgroup");
+            inRecentActivity = savedInstanceState.getBoolean("inRecentActivity");
+            spinnerSelection = savedInstanceState.getInt("spinnerSelection");
+            if(savedInstanceState.containsKey("threadNum"))
+            {
+                loadPost = true;
+                threadNum = savedInstanceState.getString("threadNum");
+            }
+        } catch (JSONException e) {
+            Log.e("Hi", "Error parsing json in onRestoreInstanceState");
+            Log.e("Hi", "Error " + e.toString());
+        }
     }
 
     @Override
@@ -219,7 +298,10 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                     newsgroupThreadsMetadata.get(threadSelected)[3] = "n";
                     ((ThreadsListAdapter)mList.getAdapter()).notifyDataSetChanged();
 
-                    //changeUnreadCounterInNewsgroup(selectedNewsgroup, unreadCounter * -1);
+                    recentActivity.getJSONObject(threadSelected).put("unread_count", 0);
+                    mService.saveRecentActivity(recentActivity);
+
+                    changeUnreadCounterInNewsgroup(viewNewsgroup, unreadCounter * -1);
                 }
             } catch (JSONException e) {
                 Log.d("Hi", "Error parsing json for onThreadSelected while in recent activity");
@@ -230,9 +312,11 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
         {
             viewNewsgroup = selectedNewsgroup;
             int unreadCounter = 0;
+            int threadNum = 0;
             try {
                 JSONObject postjson = threadMetadatas.getJSONObject(threadSelected);
                 unreadCounter = addPostView(postjson, 0);
+                threadNum = postjson.getJSONObject("post").getInt("number");
             } catch (JSONException e) {
                 Log.d("Hi", "Error parsing json for onThreadSelected while not in recent activity");
                 Log.d("Hi", "Error " + e.toString());
@@ -244,6 +328,22 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                 ((ThreadsListAdapter)mList.getAdapter()).notifyDataSetChanged();
 
                 changeUnreadCounterInNewsgroup(selectedNewsgroup, unreadCounter * -1);
+
+                try {
+                    for(int i = 0; i < recentActivity.length(); i++)
+                    {
+                        JSONObject thread_parent = recentActivity.getJSONObject(i).getJSONObject("thread_parent");
+                        if(thread_parent.getString("newsgroup").equals(selectedNewsgroup) &&
+                                thread_parent.getInt("number") == threadNum)
+                        {
+                            recentActivity.getJSONObject(i).put("unread_count", 0);
+                            mService.saveRecentActivity(recentActivity);
+                        }
+                    }
+                } catch (JSONException e) {
+                    Log.e("Hi", "Error parsing json for onThreadSelected while editing recent activity while not in recent activity");
+                    Log.d("Hi", "Error " + e.toString());
+                }
             }
         }
     }
@@ -273,6 +373,8 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
         try {
             String newsgroup = postjsonmetadata.getJSONObject("post").getString("newsgroup");
             int unreadCounter = 0;
+            if(depth == 0)
+                threadNum = postjsonmetadata.getJSONObject("post").getString("number");
             JSONObject post = mService.getPost(newsgroup, postjsonmetadata.getJSONObject("post").getString("number"));
             if(post.isNull("post"))
                 Log.e("Hi", "fuck");
@@ -360,6 +462,8 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
                 bodyView1.setText(Html.fromHtml(bodyString, null, null));
             }
             bodyView1.setMovementMethod(LinkMovementMethod.getInstance());
+            bodyView2.setMovementMethod(LinkMovementMethod.getInstance());
+            bodyView3.setMovementMethod(LinkMovementMethod.getInstance());
 
             if(!post.getString("unread_class").equals("null"))
             {
@@ -431,6 +535,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
     //Updates
     public void newsgroupChanged(boolean stealFocus)
     {
+        Log.d("Hi", "We are " + (inRecentActivity ? "in" : "not in") + " recent activity");
         newsgroupsSpinner.setJSONArray(newsgroups);
         newsgroupsSpinner.setRecentActivity(recentActivity);
         newsgroupsSpinner.notifyDataSetChanged();
@@ -486,6 +591,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
     {
         mPullToRefreshLayout.setRefreshComplete();
         newsgroups = mService.getNewsgroups();
+        Log.d("Hi", "Called from updatefinished");
         newsgroupChanged(false);
     }
 
@@ -502,7 +608,16 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             mBound = true;
             newsgroups = mService.getNewsgroups();
             recentActivity = mService.getRecentActivity();
+            Log.d("Hi", "Called from onserviceconnected");
             newsgroupChanged(true);
+
+            if(loadPost)
+            {
+                loadPost = false;
+                JSONObject postJsonMetadata = mService.getThreadMetadata(viewNewsgroup, threadNum);
+                addPostView(postJsonMetadata, 0);
+                mSlidingLayout.closePane();
+            }
         }
 
         @Override
@@ -514,8 +629,18 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
     @Override
     public boolean onNavigationItemSelected(int itemPosition, long itemId) {
         try {
+            threadNum = null;
+            if(spinnerSelection != -1)
+            {
+                Log.d("Hi", "spinnerSelection was set!");
+                itemPosition = spinnerSelection;
+                spinnerSelection = -1;
+            }
             if(itemPosition == 0)
+            {
                 inRecentActivity = true;
+                recentActivity = mService.getRecentActivity();
+            }
             else
             {
                 itemPosition--;
@@ -527,6 +652,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             Log.d("Hi", "Error " + e.toString());
             return false;
         }
+        Log.d("Hi", "Called from onNavigationItemSelected");
         newsgroupChanged(true);
         return true;
     }
@@ -588,6 +714,7 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
      * Stub action bar helper; this does nothing.
      */
     private class ActionBarHelper {
+        public ActionBar mActionBar;
         public void init() {}
         public void onPanelClosed() {}
         public void onPanelOpened() {}
@@ -599,7 +726,6 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
      * Action bar helper for use on ICS and newer devices.
      */
     private class ActionBarHelperICS extends ActionBarHelper {
-        private final ActionBar mActionBar;
         private CharSequence mDrawerTitle;
         private CharSequence mTitle;
 
@@ -633,6 +759,12 @@ public class NewsgroupActivity extends Activity implements ActionBar.OnNavigatio
             mActionBar.setHomeButtonEnabled(false);
             mActionBar.setDisplayHomeAsUpEnabled(false);
             mActionBar.setTitle(mDrawerTitle);
+
+            if(spinnerSelection != -1)
+            {
+                mActionBar.setSelectedNavigationItem(spinnerSelection);
+                //spinnerSelection = -1;
+            }
         }
 
         @Override
